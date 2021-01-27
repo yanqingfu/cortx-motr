@@ -33,6 +33,7 @@
 #include "lib/assert.h"
 
 #define M0_PARITY_ZERO (0)
+
 #define M0_PARITY_GALOIS_W (8)
 
 typedef int m0_parity_elem_t;
