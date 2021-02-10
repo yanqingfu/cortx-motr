@@ -278,6 +278,7 @@ static void dix_to_mdix_map(const struct m0_dix_req *req,
 {
 	uint64_t rid = m0_sm_id_get(&req->dr_sm);
 	uint64_t mid = m0_sm_id_get(&mreq->dmr_req.dr_sm);
+	M0_LOG(M0_DEBUG, "MOTR16599: Dix=%"PRIu64" , MDIX=%"PRIu64"", rid, mid);
 	M0_ADDB2_ADD(M0_AVI_DIX_TO_MDIX, rid, mid);
 }
 
@@ -2487,6 +2488,7 @@ M0_INTERNAL void m0_dix_req_fini_lock(struct m0_dix_req *req)
 M0_INTERNAL int m0_dix_copy(struct m0_dix *dst, const struct m0_dix *src)
 {
 	*dst = *src;
+	// M0_LOG(M0_DEBUG, "MOTR16599: Type:%u, hash:%d, pver:%u", src->dd_layout.dl_type);
 	if (src->dd_layout.dl_type == DIX_LTYPE_DESCR)
 		return m0_dix_ldesc_copy(&dst->dd_layout.u.dl_desc,
 					 &src->dd_layout.u.dl_desc);

@@ -593,6 +593,7 @@ static void to_dix_map(const struct m0_op *op,
 {
 	uint64_t cid = m0_sm_id_get(&op->op_sm);
 	uint64_t did = m0_sm_id_get(&req->dr_sm);
+	M0_LOG(M0_DEBUG, "MOTR16599: ClientID=%"PRIu64" , DIX=%"PRIu64"", cid, did);
 	M0_ADDB2_ADD(M0_AVI_CLIENT_TO_DIX, cid, did);
 }
 
@@ -952,6 +953,12 @@ static void dix_put_ast(struct m0_sm_group *grp, struct m0_sm_ast *ast)
 		flags |= COF_OVERWRITE;
 	if (oi->oi_flags & M0_OIF_SYNC_WAIT)
 		flags |= COF_SYNC_WAIT;
+
+	/* Add layout hardcode values */
+	dix.dd_layout.dl_type = DIX_LTYPE_DESCR;
+	dix.dd_layout.dl_desc.ld_hash_fnc = HASH_FNC_CITY;
+	dix.dd_layout.dl_desc.ld_pver = dix_inst(oi)->di_index_pver;	
+
 	rc = m0_dix_put(dreq, &dix, oi->oi_keys, oi->oi_vals, NULL, flags);
 	if (rc != 0)
 		dix_req_immed_failure(dix_req, M0_ERR(rc));
