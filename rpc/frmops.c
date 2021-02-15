@@ -333,6 +333,8 @@ static int rpc_buffer_submit(struct rpc_buffer *rpcbuf)
 	netbuf->nb_qtype     = M0_NET_QT_MSG_SEND;
 	netbuf->nb_callbacks = &rpc_buf_send_cb;
 
+	M0_LOG(M0_DEBUG,"Netbuf recv ep: %s\n",
+		       (char *)netbuf->nb_ep->nep_addr);
 	machine = rpc_buffer__rmachine(rpcbuf);
 	netbuf->nb_timeout = m0_time_from_now(M0_RPC_TMO, 0);
 	rc = m0_net_buffer_add(netbuf, &machine->rm_tm);
