@@ -84,8 +84,9 @@ static void isal_recover(struct m0_parity_math *math,
 			 struct m0_buf *fails,
 			 enum m0_parity_linsys_algo algo);
 static int isal_gen_coeff_tbl(uint32_t data_count, uint32_t parity_count,
-			      struct m0_buf *err_buf, uint8_t *encode_matrix,
-			      uint8_t *g_tbls);
+			      struct m0_buf *failed_idx_buf,
+			      struct m0_buf *alive_idx_buf,
+			      uint8_t *encode_matrix, uint8_t *g_tbls);
 #else
 static void reed_solomon_recover(struct m0_parity_math *math,
                                  struct m0_buf *data,
@@ -894,29 +895,35 @@ static void xor_recover(struct m0_parity_math *math,
 
 #ifndef __KERNEL__
 static int isal_gen_coeff_tbl(uint32_t data_count, uint32_t parity_count,
-			      struct m0_buf *err_buf, uint8_t *encode_matrix,
-			      uint8_t *g_tbls)
+			      struct m0_buf *failed_idx_buf,
+			      struct m0_buf *alive_idx_buf,
+			      uint8_t *encode_matrix, uint8_t *g_tbls)
 {
 	uint8_t *decode_matrix = NULL;
 	uint8_t *temp_matrix = NULL;
 	uint8_t *invert_matrix = NULL;
 	uint8_t *err_list = NULL;
+	uint8_t *alive_idx_list = NULL;
 	uint32_t unit_count;
 	uint32_t i;
 	uint32_t j;
-	uint32_t k;
 	uint32_t r;
 	uint8_t	 s;
 	int	 ret = 0;
 
-	M0_PRE(err_buf != NULL);
-	M0_PRE(err_buf->b_addr != NULL);
-	M0_PRE(err_buf->b_nob > 0);
-	M0_PRE(err_buf->b_nob <= parity_count);
+	M0_PRE(failed_idx_buf != NULL);
+	M0_PRE(failed_idx_buf->b_addr != NULL);
+	M0_PRE(failed_idx_buf->b_nob > 0);
+	M0_PRE(failed_idx_buf->b_nob <= parity_count);
+	M0_PRE(alive_idx_buf != NULL);
+	M0_PRE(alive_idx_buf->b_addr != NULL);
+	M0_PRE(alive_idx_buf->b_nob >=  data_count);
 	M0_PRE(encode_matrix != NULL);
 	M0_PRE(g_tbls != NULL);
 
-	err_list = (uint8_t *)err_buf->b_addr;
+	err_list = (uint8_t *)failed_idx_buf->b_addr;
+	alive_idx_list = (uint8_t *)alive_idx_buf->b_addr;
+
 	unit_count = data_count + parity_count;
 
 	M0_ALLOC_ARR(decode_matrix, (unit_count * data_count));
@@ -937,11 +944,8 @@ static int isal_gen_coeff_tbl(uint32_t data_count, uint32_t parity_count,
 		goto exit;
 	}
 
-	for (i = 0, k = 0, r = 0; i < data_count; i++, r++) {
-		while ((k < err_buf->b_nob) && (err_list[k] == r)) {
-			k++;
-			r++;
-		}
+	for (i = 0; i < data_count; i++) {
+		r = alive_idx_list[i];
 		for (j = 0; j < data_count; j++)
 			temp_matrix[data_count * i + j] =
 				encode_matrix[data_count * r + j];
@@ -953,7 +957,7 @@ static int isal_gen_coeff_tbl(uint32_t data_count, uint32_t parity_count,
 		goto exit;
 
 	/* Create decode matrix */
-	for (r = 0; r < err_buf->b_nob; r++) {
+	for (r = 0; r < failed_idx_buf->b_nob; r++) {
 		/* Get decode matrix with only wanted recovery rows */
 		if (err_list[r] < data_count) {    /* A src err */
 			for (i = 0; i < data_count; i++)
@@ -973,7 +977,7 @@ static int isal_gen_coeff_tbl(uint32_t data_count, uint32_t parity_count,
 		}
 	}
 
-	ec_init_tables(data_count, (uint32_t)err_buf->b_nob, decode_matrix, g_tbls);
+	ec_init_tables(data_count, (uint32_t)failed_idx_buf->b_nob, decode_matrix, g_tbls);
 
 exit:
 	m0_free(temp_matrix);
@@ -989,7 +993,8 @@ static void isal_recover(struct m0_parity_math *math,
 			 struct m0_buf *fails,
 			 enum m0_parity_linsys_algo algo)
 {
-	struct m0_buf err_buf = M0_BUF_INIT0;
+	struct m0_buf failed_idx_buf = M0_BUF_INIT0;
+	struct m0_buf alive_idx_buf = M0_BUF_INIT0;
 	uint32_t      fail_count;
 	uint32_t      unit_count;
 	uint32_t      data_count;
@@ -1003,14 +1008,31 @@ static void isal_recover(struct m0_parity_math *math,
 	uint8_t	    **data_in = NULL;
 	uint8_t	    **data_out = NULL;
 	uint8_t	     *err_list = NULL;
-	int	      ret;
+	uint8_t	     *src_list = NULL;
+	int	      ret = 0;
 
 	data_count = math->pmi_data_count;
 	parity_count = math->pmi_parity_count;
 
 	unit_count = data_count + parity_count;
 	fail = (uint8_t*) fails->b_addr;
-	fail_count = fails_count(fail, unit_count);
+
+	M0_ASSERT(m0_buf_alloc(&failed_idx_buf, parity_count) == 0);
+	M0_ASSERT(m0_buf_alloc(&alive_idx_buf, unit_count) == 0);
+
+	err_list = (uint8_t *)failed_idx_buf.b_addr;
+	src_list = (uint8_t *)alive_idx_buf.b_addr;
+
+	for (i = 0, fail_count = 0, j = 0, r = 0; i < unit_count; i++) {
+		if (fail[i]) {
+			err_list[j++] = i;
+			fail_count++;
+		}
+		else
+			src_list[r++] = i;
+	}
+	failed_idx_buf.b_nob = fail_count;
+	alive_idx_buf.b_nob = unit_count - fail_count;
 
 	M0_ASSERT(fail_count > 0);
 	M0_ASSERT(fail_count <= parity_count);
@@ -1020,9 +1042,6 @@ static void isal_recover(struct m0_parity_math *math,
 
 	for (i = 0; i < parity_count; ++i)
 		M0_ASSERT(block_size == parity[i].b_nob);
-
-	M0_ASSERT(m0_buf_alloc(&err_buf, fail_count) == 0);
-	err_list = (uint8_t *)err_buf.b_addr;
 
 	M0_ALLOC_ARR(data_in, data_count);
 	M0_ASSERT(data_in != NULL);
@@ -1035,37 +1054,34 @@ static void isal_recover(struct m0_parity_math *math,
 
 	/* Construct temp_matrix (matrix that encoded remaining frags)
 	by removing erased rows */
-	for (i = 0, j = 0, r = 0; i < unit_count; i++, r++) {
-		while (fail[r]) {
-			if (r < data_count)
-				data_out[j] = (uint8_t *)data[r].b_addr;
-			else
-				data_out[j] =
-					(uint8_t *)parity[r - data_count].b_addr;
+	for (i = 0, j = 0; i < fail_count; i++) {
+		if (err_list[i] < data_count)
+			data_out[j++] = (uint8_t *)data[err_list[i]].b_addr;
+		else
+			data_out[j++] =
+				(uint8_t *)parity[err_list[i] - data_count].b_addr;
+	}
 
-			err_list[j++] = r;
-			r++;
-		}
-
-		if (i < data_count) {
-			if (r < data_count)
-				data_in[i] = (uint8_t *)data[r].b_addr;
-			else
-				data_in[i] =
-					(uint8_t *)parity[r - data_count].b_addr;
-		}
+	for (i = 0, j = 0; i < data_count; i++) {
+		if (src_list[i] < data_count)
+			data_in[j++] = (uint8_t *)data[src_list[i]].b_addr;
+		else
+			data_in[j++] =
+				(uint8_t *)parity[src_list[i] - data_count].b_addr;
 	}
 
 	/* Get encoding coefficient tables */
-	ret = isal_gen_coeff_tbl(data_count, parity_count, &err_buf,
-				 math->encode_matrix, math->g_tbls);
+	ret = isal_gen_coeff_tbl(data_count, parity_count, &failed_idx_buf,
+				  &alive_idx_buf, math->encode_matrix,
+				  math->g_tbls);
 	M0_ASSERT(ret == 0);
 
 	/* Recover data */
 	ec_encode_data(block_size, data_count, fail_count,
 		       math->g_tbls, data_in, data_out);
 
-	m0_buf_free(&err_buf);
+	m0_buf_free(&failed_idx_buf);
+	m0_buf_free(&alive_idx_buf);
 	m0_free(data_in);
 	m0_free(data_out);
 	m0_free(decode_matrix);
@@ -1337,13 +1353,13 @@ M0_INTERNAL int m0_sns_ir_mat_compute(struct m0_sns_ir *ir)
 		}
 	}
 #else
-	ret = ir_gen_coeff_tbl(ir);
-	if (ret != 0)
-		return ret;
-
 	for (i = 0, j = 0; i < unit_count; i++)
 		if (blocks[i].sib_status == M0_SI_BLOCK_ALIVE)
 			ir->si_alive_idx[j++] = blocks[i].sib_idx;
+
+	ret = ir_gen_coeff_tbl(ir);
+	if (ret != 0)
+		return ret;
 
 	for (i = 0; i < ir->si_failed_nr; i++) {
 		dependency_bitmap_prepare(&blocks[ir->si_failed_idx[i]], ir);
@@ -1356,14 +1372,17 @@ M0_INTERNAL int m0_sns_ir_mat_compute(struct m0_sns_ir *ir)
 #ifndef __KERNEL__
 static int ir_gen_coeff_tbl(struct m0_sns_ir *ir)
 {
-	struct m0_buf err_buf = M0_BUF_INIT0;
+	struct m0_buf failed_idx_buf = M0_BUF_INIT0;
+	struct m0_buf alive_idx_buf = M0_BUF_INIT0;
 
 	M0_PRE(ir != NULL);
 
-	m0_buf_init(&err_buf, ir->si_failed_idx, ir->si_failed_nr);
+	m0_buf_init(&failed_idx_buf, ir->si_failed_idx, ir->si_failed_nr);
+	m0_buf_init(&alive_idx_buf, ir->si_alive_idx, ir->si_alive_nr);
 
 	return isal_gen_coeff_tbl(ir->si_data_nr, ir->si_parity_nr,
-				  &err_buf, ir->encode_matrix, ir->g_tbls);
+				  &failed_idx_buf, &alive_idx_buf,
+				  ir->encode_matrix, ir->g_tbls);
 }
 #else
 static int data_recov_mat_construct(struct m0_sns_ir *ir)
