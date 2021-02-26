@@ -99,11 +99,18 @@ static void fail_idx_xor_recover(struct m0_parity_math *math,
 				 struct m0_buf *data,
 				 struct m0_buf *parity,
 				 const uint32_t failure_index);
-
+#ifndef __KERNEL__
+static void fail_idx_isal_recover(struct m0_parity_math *math,
+				  struct m0_buf *data,
+				  struct m0_buf *parity,
+				  const uint32_t failure_index);
+#else
 static void fail_idx_reed_solomon_recover(struct m0_parity_math *math,
 					  struct m0_buf *data,
 					  struct m0_buf *parity,
 					  const uint32_t failure_index);
+#endif /* __KERNEL__ */
+
 #ifndef __KERNEL__
 static int isal_ir_init(const struct m0_parity_math *math, struct m0_sns_ir *ir);
 static int ir_gen_coeff_tbl(struct m0_sns_ir *ir);
@@ -254,7 +261,11 @@ static void (*fidx_recover[M0_PARITY_CAL_ALGO_NR])(struct m0_parity_math *math,
 						   struct m0_buf *parity,
 						   const uint32_t fidx) = {
 	[M0_PARITY_CAL_ALGO_XOR] = fail_idx_xor_recover,
+#ifndef __KERNEL__
+	[M0_PARITY_CAL_ALGO_ISA] = fail_idx_isal_recover,
+#else
 	[M0_PARITY_CAL_ALGO_REED_SOLOMON] = fail_idx_reed_solomon_recover,
+#endif /* __KERNEL__ */
 };
 
 enum {
@@ -1181,6 +1192,7 @@ static void fail_idx_xor_recover(struct m0_parity_math *math,
 
 }
 
+#ifdef __KERNEL__
 /** @todo Iterative reed-solomon decode to be implemented. */
 static void fail_idx_reed_solomon_recover(struct m0_parity_math *math,
 					  struct m0_buf *data,
@@ -1188,6 +1200,26 @@ static void fail_idx_reed_solomon_recover(struct m0_parity_math *math,
 					  const uint32_t failure_index)
 {
 }
+#endif /* __KERNEL__ */
+
+#ifndef __KERNEL__
+static void fail_idx_isal_recover(struct m0_parity_math *math,
+				  struct m0_buf *data,
+				  struct m0_buf *parity,
+				  const uint32_t failure_index)
+{
+	struct m0_buf fails = M0_BUF_INIT0;
+	uint32_t      unit_count = math->pmi_data_count + math->pmi_parity_count;
+
+	M0_ASSERT(failure_index < unit_count);
+	M0_ASSERT(m0_buf_alloc(&fails, unit_count) == 0);
+
+	((uint8_t *)fails.b_addr)[failure_index] = 1;
+	isal_recover(math, data, parity, &fails, 0);
+
+	m0_buf_free(&fails);
+}
+#endif /* __KERNEL__ */
 
 M0_INTERNAL void m0_parity_math_fail_index_recover(struct m0_parity_math *math,
 						   struct m0_buf *data,

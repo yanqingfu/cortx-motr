@@ -310,6 +310,13 @@ static void test_rs_fv_recover(void)
 	test_recovery(M0_PARITY_CAL_ALGO_REED_SOLOMON, FAIL_VECTOR);
 }
 
+static void test_rs_fail_idx_recover(void)
+{
+	duc = DATA_UNIT_COUNT_MAX;
+	fail_index_xor = DATA_UNIT_COUNT_MAX + 1;
+	test_recovery(M0_PARITY_CAL_ALGO_REED_SOLOMON, FAIL_INDEX);
+}
+
 static void test_xor_fv_recover(void)
 {
 	duc = DATA_UNIT_COUNT_MAX;
@@ -1311,6 +1318,7 @@ static inline uint32_t block_nr(const struct m0_sns_ir *ir)
 
 #define _TESTS								\
 	{ "reed_solomon_recover_with_fail_vec", test_rs_fv_recover },	\
+	{ "reed_solomon_recover_with_fail_index", test_rs_fail_idx_recover },	\
 	{ "xor_recover_with_fail_vec", test_xor_fv_recover },		\
 	{ "xor_recover_with_fail_index", test_xor_fail_idx_recover },	\
 	{ "buffer_xor", test_buffer_xor },				\
