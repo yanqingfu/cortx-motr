@@ -248,6 +248,8 @@ static bool config_generate(uint32_t *data_count,
 		if (!j) { /* at least one fail */
 			fail[fuc/2] = 1;
 		}
+
+		fail_index_xor = (uint8_t) m0_rnd64(&seed) % (duc + puc);
 	}
 
 	*data_count = duc;
@@ -288,16 +290,20 @@ static void test_recovery(const enum m0_parity_cal_algo algo,
 
 		m0_parity_math_calculate(&math, data_buf, parity_buf);
 
-		unit_spoil(buff_size, fail_count, data_count);
+		if (rt == FAIL_INDEX){
 
-		if (rt == FAIL_INDEX)
+			memset(fail, 0, (DATA_UNIT_COUNT_MAX + PARITY_UNIT_COUNT_MAX));
+			fail[fail_index_xor] = 1;
+			unit_spoil(buff_size, fail_count, data_count);
 			m0_parity_math_fail_index_recover(&math, data_buf,
 							  parity_buf,
 							  fail_index_xor);
-		else if (rt == FAIL_VECTOR)
+		}
+		else if (rt == FAIL_VECTOR){
+			unit_spoil(buff_size, fail_count, data_count);
 			m0_parity_math_recover(&math, data_buf, parity_buf,
 					       &fail_buf, 0);
-
+		}
 		m0_parity_math_fini(&math);
 
 		M0_ASSERT_INFO(expected_eq(data_count, buff_size),
@@ -313,7 +319,6 @@ static void test_rs_fv_recover(void)
 static void test_rs_fail_idx_recover(void)
 {
 	duc = DATA_UNIT_COUNT_MAX;
-	fail_index_xor = DATA_UNIT_COUNT_MAX + 1;
 	test_recovery(M0_PARITY_CAL_ALGO_REED_SOLOMON, FAIL_INDEX);
 }
 
