@@ -399,8 +399,8 @@ M0_INTERNAL int m0_cs_dix_setup(struct m0_motr *cctx)
 	 */
 	for (i = 0; i < pm->pm_state->pst_nr_devices; ++i) {
 		sdev = &pm->pm_state->pst_devices_array[i];
-		M0_ASSERT(M0_IN(sdev->pd_state, (M0_PNDS_ONLINE,
-						 M0_PNDS_SNS_REBALANCING)));
+//		M0_ASSERT(M0_IN(sdev->pd_state, (M0_PNDS_ONLINE,
+//						 M0_PNDS_SNS_REBALANCING)));
 		sdev_idx = sdev->pd_sdev_idx;
 		cas_svc = pc->pc_dev2svc[sdev_idx].pds_ctx;
 		M0_ASSERT(cas_svc->sc_type == M0_CST_CAS);
