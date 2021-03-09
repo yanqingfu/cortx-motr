@@ -72,8 +72,14 @@ enum {
 	CP_SINGLE          = 1,
 	FAIL_NR            = 1,
 	BUF_NR             = 4,
+#ifdef ENABLE_LIBFAB
+	SEG_NR             = 1,
+	/* M0_RPC_DEF_MAX_RPC_MSG_SIZE = 128k */
+	SEG_SIZE           = 131072,
+#else
 	SEG_NR             = 256,
 	SEG_SIZE           = 4096,
+#endif
 	START_DATA         = 101,
 	DEV_ID             = 1,
 	KEY                = 1
@@ -479,6 +485,7 @@ static void receiver_ag_create(struct m0_cm *cm)
 	struct m0_sns_cm_ag     *sag;
 	struct m0_cm_aggr_group *ag;
 	struct m0_sns_cm_cp     *sns_cp;
+	int ret;
 
 	sag = &rag.rag_base;
 	ag_setup(sag, cm);
