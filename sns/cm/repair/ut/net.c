@@ -485,7 +485,6 @@ static void receiver_ag_create(struct m0_cm *cm)
 	struct m0_sns_cm_ag     *sag;
 	struct m0_cm_aggr_group *ag;
 	struct m0_sns_cm_cp     *sns_cp;
-	int ret;
 
 	sag = &rag.rag_base;
 	ag_setup(sag, cm);
