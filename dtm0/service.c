@@ -182,7 +182,7 @@ M0_INTERNAL int m0_dtm0_service_process_disconnect(struct m0_reqh_service *s,
 
 M0_INTERNAL struct m0_rpc_session *
 m0_dtm0_service_process_session_get(struct m0_reqh_service *s,
-				    struct m0_fid *remote_srv)
+				    const struct m0_fid *remote_srv)
 {
 	struct m0_dtm0_service *service = to_dtm(s);
 	struct dtm0_process *process = NULL;

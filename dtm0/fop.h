@@ -79,6 +79,9 @@ struct dtm0_fom {
 	struct m0_fom		     dtf_fom;
 };
 
+M0_INTERNAL void m0_dtm0_on_persistent(struct m0_reqh               *reqh,
+				       const struct m0_dtm0_tx_desc *txd);
+
 /* __MOTR_DTM0_FOP_H__ */
 #endif
 

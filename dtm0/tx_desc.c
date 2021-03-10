@@ -29,7 +29,7 @@
 
 #include "dtm0/clk_src.h"
 #include "lib/misc.h"
-#define M0_TRACE_SUBSYSTEM M0_TRACE_SUBSYS_DTM
+#define M0_TRACE_SUBSYSTEM M0_TRACE_SUBSYS_DTM0
 #include "dtm0/tx_desc.h"
 #include "lib/assert.h" /* M0_PRE */
 #include "lib/memory.h" /* M0_ALLOC */
@@ -145,6 +145,31 @@ M0_INTERNAL bool m0_dtm0_tx_desc_state_eq(const struct m0_dtm0_tx_desc *txd,
 {
 	return m0_forall(i, txd->dtd_pg.dtpg_nr,
 			 txd->dtd_pg.dtpg_pa[i].pa_state == state);
+}
+
+/* XXX: This function has only one purpose -- to aid debugging with GDB */
+M0_INTERNAL void m0_dtm0_tx_desc_print(const struct m0_dtm0_tx_desc *txd)
+{
+	int i;
+
+	static const struct {
+		char name;
+	} smap[M0_DTPS_NR] = {
+		[M0_DTPS_INIT       ] = { .name = '0' },
+		[M0_DTPS_INPROGRESS ] = { .name = 'I' },
+		[M0_DTPS_EXECUTED   ] = { .name = 'E' },
+		[M0_DTPS_PERSISTENT ] = { .name = 'P' },
+	};
+
+	M0_LOG(M0_ALWAYS, "txid=" FID_F ", " M0_DTM0_TS_FMT ":",
+	       FID_P(&txd->dtd_id.dti_fid),
+	       M0_DTM0_TS_P(&txd->dtd_id.dti_ts));
+
+	for (i = 0; i < txd->dtd_pg.dtpg_nr; ++i) {
+		M0_LOG(M0_ALWAYS, "\tpa=" FID_F ", %c",
+		       FID_P(&txd->dtd_pg.dtpg_pa[i].pa_fid),
+		       smap[txd->dtd_pg.dtpg_pa[i].pa_state].name);
+	}
 }
 
 #undef M0_TRACE_SUBSYSTEM

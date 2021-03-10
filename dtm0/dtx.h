@@ -71,6 +71,9 @@ struct m0_dtm0_dtx {
 	 * any lists here. But we will have to some time later.
 	 */
 	const struct m0_fop    *dd_fop;
+
+	/** List of ASTs for persistent notices. */
+	struct m0_tl            dd_pnl;
 };
 
 M0_INTERNAL void m0_dtm0_dtx_domain_init(void);
@@ -102,6 +105,9 @@ M0_INTERNAL void m0_dtx0_assign_fop(struct m0_dtx       *dtx,
 M0_INTERNAL int m0_dtx0_close(struct m0_dtx *dtx);
 
 M0_INTERNAL void m0_dtx0_executed(struct m0_dtx *dtx, uint32_t pa_idx);
+
+M0_INTERNAL void m0_dtm0_dtx_post_persistent(struct m0_dtm0_dtx *dtx,
+					     const struct m0_dtm0_tx_desc *txd);
 
 /** Puts a copy of dtx's transaction descriptor into "dst".
  * User is responsible for m0_dtm0_tx_desc_fini()lasing of 'dst'.

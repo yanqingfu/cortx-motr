@@ -84,7 +84,9 @@ static const struct m0_fom_type_ops dtm0_req_fom_type_ops = {
 
 static void dtm0_rpc_item_reply_cb(struct m0_rpc_item *item)
 {
-	struct m0_fop *reply;
+	struct m0_fop *reply = NULL;
+
+	M0_ENTRY("item=%p", item);
 
         M0_PRE(item != NULL);
 	M0_PRE(M0_IN(m0_fop_opcode(m0_rpc_item_to_fop(item)),
@@ -94,6 +96,8 @@ static void dtm0_rpc_item_reply_cb(struct m0_rpc_item *item)
 		reply = m0_rpc_item_to_fop(item->ri_reply);
 		M0_ASSERT(M0_IN(m0_fop_opcode(reply), (M0_DTM0_REP_OPCODE)));
 	}
+
+	M0_LEAVE("reply=%p", reply);
 }
 
 M0_INTERNAL void m0_dtm0_fop_fini(void)
@@ -165,6 +169,7 @@ static int dtm0_fom_create(struct m0_fop *fop,
 	struct dtm0_rep_fop *reply;
 
 	M0_ALLOC_PTR(fom);
+	M0_ENTRY("reqh=%p", reqh);
 
 	repfop = m0_fop_reply_alloc(fop, &dtm0_rep_fop_fopt);
 	if (fom != NULL && repfop != NULL) {
@@ -177,6 +182,7 @@ static int dtm0_fom_create(struct m0_fop *fop,
 		reply->dr_rc = 0;
 		m0_fom_init(fom0, &fop->f_type->ft_fom_type,
 			    &dtm0_req_fom_ops, fop, repfop, reqh);
+		M0_LEAVE();
 		return M0_RC(0);
 	} else {
 		m0_free(repfop);
@@ -199,6 +205,76 @@ static size_t dtm0_fom_locality(const struct m0_fom *fom)
 	M0_PRE(fom != NULL);
 	return locality++;
 }
+
+static void m0_dtm0_post__persistent(struct m0_dtm0_service *dtms,
+				     const struct m0_fid *tgt,
+				     const struct m0_dtm0_tx_desc *txd)
+{
+	struct m0_fop          *fop;
+	struct m0_rpc_session  *session;
+	struct m0_rpc_item     *item;
+	struct dtm0_req_fop    *req;
+	int                     rc;
+
+	M0_ENTRY("reqh=%p", dtms->dos_generic.rs_reqh);
+
+	session = m0_dtm0_service_process_session_get(&dtms->dos_generic, tgt);
+
+	fop               = m0_fop_alloc_at(session, &dtm0_req_fop_fopt);
+	item              = &fop->f_item;
+	item->ri_ops      = &dtm0_req_fop_rpc_item_ops;
+	item->ri_session  = session;
+	item->ri_prio     = M0_RPC_ITEM_PRIO_MID;
+	item->ri_deadline = M0_TIME_IMMEDIATELY;
+
+	req               = m0_fop_data(fop);
+	req->dtr_msg      = DTM_PERSISTENT;
+	rc = m0_dtm0_tx_desc_copy(txd, &req->dtr_txr);
+	M0_ASSERT(rc == 0);
+
+	rc = m0_rpc_post(item);
+	M0_ASSERT(rc == 0);
+	m0_fop_put_lock(fop);
+
+	M0_LEAVE("Sent PERSISTENT notice " FID_F " -> " FID_F,
+		 FID_P(&dtms->dos_generic.rs_service_fid), FID_P(tgt));
+}
+
+
+M0_INTERNAL void m0_dtm0_on_persistent(struct m0_reqh               *reqh,
+				       const struct m0_dtm0_tx_desc *txd)
+{
+	int                     rc;
+	struct m0_dtm0_service *dtms;
+	struct m0_dtm0_tx_desc  msg = {};
+	int                     i;
+
+	dtms = m0_dtm0_service_find(reqh);
+
+	rc = m0_dtm0_tx_desc_copy(txd, &msg);
+	M0_ASSERT(rc == 0);
+
+	/* TODO: This change will be done by DTM0 log because
+	 * it should log the entry "pa == self" with PERSISTENT state
+	 * set.
+	 */
+	for (i = 0; i < msg.dtd_pg.dtpg_nr; ++i) {
+		if (m0_fid_eq(&msg.dtd_pg.dtpg_pa[i].pa_fid,
+			      &dtms->dos_generic.rs_service_fid)) {
+			msg.dtd_pg.dtpg_pa[i].pa_state =
+				max_check(msg.dtd_pg.dtpg_pa[i].pa_state,
+					  (uint32_t) M0_DTPS_PERSISTENT);
+		}
+	}
+
+	/* Notify the originator */
+	m0_dtm0_post__persistent(dtms, &msg.dtd_id.dti_fid, &msg);
+
+	/* TODO: Send notices to the rest of the participants. */
+	m0_dtm0_tx_desc_fini(&msg);
+}
+
+
 
 #define M0_FID(c_, k_)  { .f_container = c_, .f_key = k_ }
 static void dtm0_pong_back(enum m0_be_dtm0_log_credit_op msgtype,
@@ -224,31 +300,49 @@ static void dtm0_pong_back(enum m0_be_dtm0_log_credit_op msgtype,
 
 	rc = m0_rpc_post(item);
 	M0_ASSERT(rc == 0);
-	m0_fop_put_lock(fop); // XXX: shall we lock here???
+	/* XXX: put it back, we do not need it anymore.
+	 * Should it be done by dtm0_rpc_item_reply_cb?
+	 */
+	m0_fop_put_lock(fop);
 }
 
 static int dtm0_fom_tick(struct m0_fom *fom)
 {
-	int                  rc;
-	struct dtm0_req_fop *req;
-	struct dtm0_rep_fop *rep;
+	int                     rc;
+	struct dtm0_req_fop    *req;
+	struct dtm0_rep_fop    *rep;
+	struct m0_dtm0_service *svc;
 
 	if (m0_fom_phase(fom) < M0_FOPH_NR) {
 		rc = m0_fom_tick_generic(fom);
 	} else {
 		req = m0_fop_data(fom->fo_fop);
+		M0_LOG(M0_DEBUG, "Processing non-generic phase %d %d, " FID_F
+		       ", %p",
+		       (int) req->dtr_msg,
+		       (int) m0_dtm0_is_a_volatile_dtm(fom->fo_service),
+		       FID_P(&fom->fo_service->rs_service_fid),
+		       fom->fo_service->rs_reqh);
 
-		if (req->dtr_msg == M0_DTML_EXECUTED && m0_dtm0_is_a_persistent_dtm(fom->fo_service)) {
+		if (req->dtr_msg == DMT_EXECUTE &&
+		    m0_dtm0_is_a_persistent_dtm(fom->fo_service)) {
 			struct m0_fid fid = M0_FID(0x7300000000000001, 0x1a);
 			dtm0_pong_back(M0_DTML_PERSISTENT, &req->dtr_txr,
 				m0_dtm0_service_process_session_get(
 					fom->fo_service, &fid));
 		}
 
+		if (req->dtr_msg == DTM_PERSISTENT &&
+		    m0_dtm0_is_a_volatile_dtm(fom->fo_service)) {
+			svc = m0_dtm0_service_find(fom->fo_service->rs_reqh);
+			M0_ASSERT(svc != NULL);
+			m0_be_dtm0_log_post_persistent(svc->dos_log,
+						       &req->dtr_txr);
+		}
+
 		rep = m0_fop_data(fom->fo_rep_fop);
 
-		//m0_buf_copy(&rep->dr_txr->dt_txr_payload, &req->dto_txr->dt_txr_payload);
-		rep->dr_txr = req->dtr_txr;
+		M0_SET0(&rep->dr_txr);
 		rep->dr_rc = 0;
 		m0_fom_phase_set(fom, M0_FOPH_SUCCESS);
 		rc = M0_FSO_AGAIN;

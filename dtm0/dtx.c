@@ -27,7 +27,7 @@
  * @{
  */
 
-#define M0_TRACE_SUBSYSTEM M0_TRACE_SUBSYS_DTM
+#define M0_TRACE_SUBSYSTEM M0_TRACE_SUBSYS_DTM0
 #include "dtm0/dtx.h"
 #include "lib/assert.h" /* M0_PRE */
 #include "lib/memory.h" /* M0_ALLOC */
@@ -37,6 +37,19 @@
 #include "reqh/reqh.h" /* reqh2confc */
 #include "conf/helpers.h" /* proc2srv */
 #include "be/dtm0_log.h" /* dtm0_log API */
+
+struct pna_entry {
+	struct m0_tlink        p_link;
+	uint64_t               p_magic;
+	struct m0_sm_ast       p_ast;
+	struct m0_dtm0_tx_desc p_txd;
+	struct m0_dtm0_dtx    *p_dtx;
+};
+
+/* TODO: Move the magics to the magic satchel */
+M0_TL_DESCR_DEFINE(pna, "pnotice_list", static, struct pna_entry, p_link,
+		   p_magic, 0x3AB0D, 0xB0EB0D);
+M0_TL_DEFINE(pna, static, struct pna_entry);
 
 static struct m0_sm_state_descr dtx_states[] = {
 	[M0_DDS_INIT] = {
@@ -144,16 +157,24 @@ static struct m0_dtm0_dtx *m0_dtm0_dtx_alloc(struct m0_dtm0_service *svc,
 		rec->dlr_dtx.dd_ancient_dtx.tx_dtx = &rec->dlr_dtx;
 		m0_sm_init(&rec->dlr_dtx.dd_sm, &dtx_sm_conf, M0_DDS_INIT,
 			   group);
+		pna_tlist_init(&rec->dlr_dtx.dd_pnl);
 	}
 	return &rec->dlr_dtx;
 }
 
 static void m0_dtm0_dtx_free(struct m0_dtm0_dtx *dtx)
 {
+	struct pna_entry *pna;
+
 	M0_PRE(dtx != NULL);
+	m0_tl_teardown(pna, &dtx->dd_pnl, pna) {
+		m0_dtm0_tx_desc_fini(&pna->p_txd);
+	}
+	M0_ASSERT(pna_tlist_is_empty(&dtx->dd_pnl));
 	m0_sm_fini(&dtx->dd_sm);
 	m0_dtm0_tx_desc_fini(&dtx->dd_txd);
 	m0_free(dtx);
+
 }
 
 static int m0_dtm0_dtx_prepare(struct m0_dtm0_dtx *dtx)
@@ -210,6 +231,8 @@ static int m0_dtm0_dtx_assign_fid(struct m0_dtm0_dtx  *dtx,
 	struct m0_fid           rdtms_fid;
 	int                     rc;
 
+	M0_ENTRY();
+
 	M0_PRE(dtx != NULL);
 	M0_PRE(pa_idx < dtx->dd_txd.dtd_pg.dtpg_nr);
 	M0_PRE(m0_fid_is_valid(pa_fid));
@@ -243,8 +266,8 @@ static int m0_dtm0_dtx_assign_fid(struct m0_dtm0_dtx  *dtx,
 	M0_ASSERT(pa->pa_state == M0_DTPS_INIT);
 	pa->pa_state = M0_DTPS_INPROGRESS;
 
-	M0_LOG(DEBUG, "pa: " FID_F " (User) => " FID_F " (DTM) ",
-	       FID_P(pa_fid), FID_P(&rdtms_fid));
+	M0_LEAVE("pa: " FID_F " (User) => " FID_F " (DTM) ",
+		 FID_P(pa_fid), FID_P(&rdtms_fid));
 
 	/* TODO: All these M0_ASSERTs will be converted into IFs eventually
 	 * if we want to gracefully fail instead of m0_panic'ing in the case
@@ -274,45 +297,62 @@ static int m0_dtm0_dtx_close(struct m0_dtm0_dtx *dtx)
 	return 0;
 }
 
-static void m0_dtm0_dtx_persistent(struct m0_dtm0_dtx *dtx, uint32_t idx)
-{
-	struct m0_dtm0_tx_pa *pa;
-
-	M0_PRE(dtx != NULL);
-	M0_PRE(m0_sm_group_is_locked(dtx->dd_sm.sm_grp));
-
-	pa = &dtx->dd_txd.dtd_pg.dtpg_pa[idx];
-
-	/* Only I->P, E->P, P->P transitions are allowed here */
-	M0_ASSERT(pa->pa_state >= M0_DTPS_INPROGRESS &&
-		  pa->pa_state <= M0_DTPS_PERSISTENT);
-	pa->pa_state = M0_DTPS_PERSISTENT;
-}
-
 static void dtx_exec_all_ast_cb(struct m0_sm_group *grp, struct m0_sm_ast *ast)
 {
 	struct m0_dtm0_dtx *dtx = ast->sa_datum;
-	int                 i;
+
+	M0_ENTRY("dtx=%p", dtx);
 
 	M0_ASSERT(dtx->dd_sm.sm_state == M0_DDS_EXECUTED_ALL);
 	M0_ASSERT(dtx->dd_nr_executed == dtx->dd_txd.dtd_pg.dtpg_nr);
 
-	/* TODO: This loop emulates synchronous arrival of DTM0 notices.
-	 * It should be removed once DTM0 service is able to send the notice.
-	 */
-	for (i = 0; i < dtx->dd_txd.dtd_pg.dtpg_nr; ++i) {
-		m0_dtm0_dtx_persistent(dtx, i);
-	}
-
-	/* TODO: As similar transition should be added into the function that
-	 * will handle PERSISTENT notices:
-	 *	if (dtx_state == exec_all && all(txr, PERSISTENT))
-	 *		state_set(STABLE)
-	 */
 	if (m0_dtm0_tx_desc_state_eq(&dtx->dd_txd, M0_DTPS_PERSISTENT)) {
 		m0_sm_state_set(&dtx->dd_sm, M0_DDS_STABLE);
 	}
+
+	M0_LEAVE("is_stable=%d", (int) dtx->dd_sm.sm_state == M0_DDS_STABLE);
 }
+
+static void dtx_persistent_ast_cb(struct m0_sm_group *grp, struct m0_sm_ast *ast)
+{
+	struct pna_entry   *entry = ast->sa_datum;
+	struct m0_dtm0_dtx *dtx = entry->p_dtx;
+
+	M0_ENTRY();
+	m0_dtm0_tx_desc_apply(&dtx->dd_txd, &entry->p_txd);
+	dtx_log_update(dtx);
+
+	if (dtx->dd_sm.sm_state == M0_DDS_EXECUTED_ALL &&
+	    m0_dtm0_tx_desc_state_eq(&dtx->dd_txd, M0_DTPS_PERSISTENT)) {
+		M0_ASSERT(dtx->dd_nr_executed == dtx->dd_txd.dtd_pg.dtpg_nr);
+		m0_sm_state_set(&dtx->dd_sm, M0_DDS_STABLE);
+	}
+
+	M0_LEAVE("is_stable=%d", (int) dtx->dd_sm.sm_state == M0_DDS_STABLE);
+}
+
+M0_INTERNAL void m0_dtm0_dtx_post_persistent(struct m0_dtm0_dtx *dtx,
+					     const struct m0_dtm0_tx_desc *txd)
+{
+	struct pna_entry *entry;
+	int               rc;
+
+	M0_ENTRY();
+
+	M0_ALLOC_PTR(entry);
+	M0_ASSERT(entry != NULL);
+
+	entry->p_dtx = dtx;
+	rc = m0_dtm0_tx_desc_copy(txd, &entry->p_txd);
+	M0_ASSERT(rc == 0);
+	entry->p_ast.sa_cb = dtx_persistent_ast_cb;
+	entry->p_ast.sa_datum = entry;
+	pna_tlink_init_at_tail(entry, &dtx->dd_pnl);
+
+	m0_sm_ast_post(dtx->dd_sm.sm_grp, &entry->p_ast);
+	M0_LEAVE();
+}
+
 
 static void m0_dtm0_dtx_executed(struct m0_dtm0_dtx *dtx, uint32_t idx)
 {
@@ -345,6 +385,14 @@ static void m0_dtm0_dtx_executed(struct m0_dtm0_dtx *dtx, uint32_t idx)
 		dtx->dd_exec_all_ast.sa_datum = dtx;
 		/* EXECUTED and STABLE should not be triggered within the
 		 * same ast tick. This ast helps us to enforce it.
+		 * XXX: there is a catch22-like problem with DIX states:
+		 * DIX request should already be in "FINAL" state when
+		 * the corresponding dtx reaches STABLE. However, the dtx
+		 * cannot transit from EXECUTED to STABLE (through EXEC_ALL)
+		 * if DIX reached FINAL already (the list of CAS rops has been
+		 * destroyed). So that the EXEC_ALL ast cuts this knot by
+		 * scheduling the transition EXEC_ALL -> STABLE in a separate
+		 * tick where DIX request reached FINAL.
 		 */
 		m0_sm_ast_post(dtx->dd_sm.sm_grp, &dtx->dd_exec_all_ast);
 	}
@@ -428,7 +476,6 @@ M0_INTERNAL enum m0_dtm0_dtx_state m0_dtx0_sm_state(const struct m0_dtx *dtx)
 	M0_PRE(dtx != NULL);
 	return dtx->tx_dtx->dd_sm.sm_state;
 }
-
 
 #undef M0_TRACE_SUBSYSTEM
 
