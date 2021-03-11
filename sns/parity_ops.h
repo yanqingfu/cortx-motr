@@ -34,15 +34,7 @@
 
 #define M0_PARITY_ZERO (0)
 
-#ifdef __KERNEL__
 #define M0_PARITY_GALOIS_W (8)
-#endif
-
-#ifndef __KERNEL__
-#define M0_PARITY_W (8)
-#else
-#define M0_PARITY_W M0_PARITY_GALOIS_W
-#endif /* __KERNEL__ */
 
 typedef int m0_parity_elem_t;
 
