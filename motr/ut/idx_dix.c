@@ -785,79 +785,34 @@ struct m0_client* st_get_instance()
 #include "dtm0/helper.h"
 #include "dtm0/service.h"
 
-static void st_put_one(void)
+struct dtm0_ut_ctx {
+	struct m0_fid           duc_cli_svc_fid;
+	struct m0_fid           duc_srv_svc_fid;
+	struct m0_reqh_service *duc_cli_svc;
+	struct m0_reqh_service *duc_srv_svc;
+	struct m0_idx           duc_idx;
+	struct m0_container     duc_realm;
+};
+
+static struct dtm0_ut_ctx duc;
+
+static void duc_setup(void)
 {
-	struct m0_container realm;
-	struct m0_idx       idx;
-	struct m0_fid       ifid;
-	struct m0_op       *op = NULL;
-	int                 rc;
-	struct m0_bufvec    keys;
-	struct m0_bufvec    vals;
-	int                 rcs[1];
-	m0_bcount_t         len = 1;
-	char               *key;
-	char               *val;
-	int                 flags = 0;
-
-	key = m0_strdup("ItIsAKey");
-	val = m0_strdup("ItIsAValue");
-
-	keys = M0_BUFVEC_INIT_BUF((void **) &key, &len);
-	vals = M0_BUFVEC_INIT_BUF((void **) &val, &len);
-
-	general_ifid_fill(&ifid, true);
-	m0_container_init(&realm, NULL, &M0_UBER_REALM, ut_m0c);
-	m0_idx_init(&idx, &realm.co_realm, (struct m0_uint128 *) &ifid);
-
-	/* Create index. */
-	rc = m0_entity_create(NULL, &idx.in_entity, &op);
-	M0_UT_ASSERT(rc == 0);
-	m0_op_launch(&op, 1);
-	rc = m0_op_wait(op, M0_BITS(M0_OS_STABLE), WAIT_TIMEOUT);
-	M0_UT_ASSERT(rc == 0);
-	m0_op_fini(op);
-	m0_op_free(op);
-	op = NULL;
-
-	/* PUT one kv pair */
-	rc = m0_idx_op(&idx, M0_IC_PUT, &keys, &vals, rcs, flags, &op);
-	M0_UT_ASSERT(rc == 0);
-	m0_op_launch(&op, 1);
-
-	rc = m0_op_wait(op, M0_BITS(M0_OS_EXECUTED), WAIT_TIMEOUT);
-	M0_LOG(M0_DEBUG, "Got executed");
-	if (rc == -ESRCH) {
-		M0_UT_ASSERT(op->op_sm.sm_state == M0_OS_STABLE);
-	} else {
-		rc = m0_op_wait(op, M0_BITS(M0_OS_STABLE), WAIT_TIMEOUT);
-		M0_LOG(M0_DEBUG, "Got stable");
-		M0_UT_ASSERT(rc == 0);
-	}
-	M0_UT_ASSERT(rc == 0);
-	M0_UT_ASSERT(op->op_rc == 0);
-	M0_UT_ASSERT(rcs[0] == 0);
-	m0_op_fini(op);
-	m0_op_free(op);
-	op = NULL;
-
-	m0_idx_fini(&idx);
-	m0_free(key);
-	m0_free(val);
-}
-
-static void st_one_dtm0_op(void)
-{
-	static struct m0_fid     cli_srv_fid  = M0_FID_INIT(0x7300000000000001,
+	const char              *cl_ep_addr   = "0@lo:12345:34:2";
+	struct m0_fid            cli_srv_fid  = M0_FID_INIT(0x7300000000000001,
 							    0x1a);
-	static struct m0_fid     srv_dtm0_fid = M0_FID_INIT(0x7300000000000001,
+	struct m0_fid            srv_dtm0_fid = M0_FID_INIT(0x7300000000000001,
 							    0x1c);
-	static const char       *cl_ep_addr   = "0@lo:12345:34:2";
 	struct m0_reqh_service  *cli_srv;
 	struct m0_reqh_service  *srv_srv;
 	struct m0_reqh          *srv_reqh;
+	struct m0_container     *realm = &duc.duc_realm;
+	struct m0_idx           *idx = &duc.duc_idx;
+	struct m0_op            *op = NULL;
 	int                      rc;
+	struct m0_fid            ifid;
 
+	/* Connect to the server */
 	srv_reqh = &dix_ut_sctx.rsx_motr_ctx.cc_reqh_ctx.rc_reqh;
 	cli_srv = m0_dtm__client_service_start(&ut_m0c->m0c_reqh, &cli_srv_fid);
 	M0_UT_ASSERT(cli_srv != NULL);
@@ -867,12 +822,223 @@ static void st_one_dtm0_op(void)
 	ut_m0c->m0c_dtms = m0_dtm0_service_find(&ut_m0c->m0c_reqh);
 	M0_UT_ASSERT(ut_m0c->m0c_dtms != NULL);
 
-	st_put_one();
+	general_ifid_fill(&ifid, true);
+	m0_container_init(realm, NULL, &M0_UBER_REALM, ut_m0c);
+	m0_idx_init(idx, &realm->co_realm, (struct m0_uint128 *) &ifid);
 
+	/* Create the index */
+	rc = m0_entity_create(NULL, &idx->in_entity, &op);
+	M0_UT_ASSERT(rc == 0);
+	m0_op_launch(&op, 1);
+	rc = m0_op_wait(op, M0_BITS(M0_OS_STABLE), WAIT_TIMEOUT);
+	M0_UT_ASSERT(rc == 0);
+	m0_op_fini(op);
+	m0_op_free(op);
+	op = NULL;
+
+	/* Save the context */
+	duc.duc_cli_svc_fid = cli_srv_fid;
+	duc.duc_srv_svc_fid = srv_dtm0_fid;
+	duc.duc_cli_svc = cli_srv;
+	duc.duc_srv_svc = srv_srv;
+}
+
+static void duc_teardown(void)
+{
+	struct m0_reqh_service  *cli_srv = duc.duc_cli_svc;
+	struct m0_reqh_service  *srv_srv = duc.duc_srv_svc;
+	struct m0_op            *op = NULL;
+	struct m0_fid            cli_srv_fid  = duc.duc_cli_svc_fid;
+	int                      rc;
+
+	/* Disconnect from the server */
 	rc = m0_dtm0_service_process_disconnect(srv_srv, &cli_srv_fid);
 	M0_UT_ASSERT(rc == 0);
 	m0_dtm__client_service_stop(cli_srv);
+
+	/* Delete the index */
+	rc = m0_entity_delete(&duc.duc_idx.in_entity, &op);
+	M0_UT_ASSERT(rc == 0);
+	m0_op_fini(op);
+	m0_op_free(op);
+	m0_idx_fini(&duc.duc_idx);
+	op = NULL;
 }
+
+
+static void concurrent_m0op(uint64_t nr, enum m0_idx_opcode opcode)
+{
+	struct m0_idx      *idx = &duc.duc_idx;
+	struct m0_op      **ops;
+	struct m0_op       *op = NULL;
+	int                 rc;
+	struct m0_bufvec   *key_vecs;
+	struct m0_bufvec    vals = {};
+	int                *rcs;
+	m0_bcount_t         len = 1;
+	char               *val = NULL;
+	int                 flags = 0;
+	uint64_t            i;
+
+	M0_PRE(M0_IN(opcode, (M0_IC_PUT, M0_IC_DEL)));
+	M0_ALLOC_ARR(ops, nr);
+	M0_UT_ASSERT(ops != NULL);
+	M0_ALLOC_ARR(rcs, nr);
+	M0_UT_ASSERT(rcs != NULL);
+	M0_ALLOC_ARR(key_vecs, nr);
+	M0_UT_ASSERT(key_vecs != NULL);
+
+	if (opcode == M0_IC_PUT) {
+		val = m0_strdup("ItIsAValue");
+		M0_UT_ASSERT(val != NULL);
+		vals = M0_BUFVEC_INIT_BUF((void **) &val, &len);
+	}
+
+	/* Execute the ops */
+	for (i = 0; i < nr; ++i) {
+		rc = m0_bufvec_alloc(&key_vecs[i], 1, sizeof(i));
+		M0_UT_ASSERT(key_vecs[i].ov_vec.v_count[0] == sizeof(i));
+		memcpy(key_vecs[i].ov_buf[0], &i, sizeof(i));
+
+		rc = m0_idx_op(idx, opcode, &key_vecs[i],
+			       opcode == M0_IC_DEL ? NULL : &vals,
+			       &rcs[i], flags, &ops[i]);
+		M0_UT_ASSERT(rc == 0);
+		m0_op_launch(&ops[i], 1);
+
+		rc = m0_op_wait(ops[i], M0_BITS(M0_OS_EXECUTED), WAIT_TIMEOUT);
+		M0_LOG(M0_DEBUG, "Got executed %d", (int) i);
+		if (rc == -ESRCH)
+			M0_UT_ASSERT(ops[i]->op_sm.sm_state == M0_OS_STABLE);
+	}
+
+	/* Wait until they get stable */
+
+	for (i = 0; i < nr; ++i) {
+		op = ops[i];
+		rc = m0_op_wait(op, M0_BITS(M0_OS_STABLE), WAIT_TIMEOUT);
+		M0_LOG(M0_DEBUG, "Got stable %d", (int) i);
+		M0_UT_ASSERT(rc == 0);
+		M0_UT_ASSERT(op->op_rc == 0);
+		M0_UT_ASSERT(rcs[0] == 0);
+		m0_op_fini(op);
+		m0_op_free(op);
+		ops[i] = NULL;
+		op = NULL;
+		m0_bufvec_free(&key_vecs[i]);
+	}
+
+	m0_free(key_vecs);
+	m0_free(ops);
+	m0_free(val);
+}
+
+static void sequential_m0op(uint64_t nr, enum m0_idx_opcode opcode)
+{
+	struct m0_idx      *idx = &duc.duc_idx;
+	struct m0_op       *op = NULL;
+	int                 rc;
+	struct m0_bufvec    keys;
+	struct m0_bufvec    vals = {};
+	int                 rcs[1];
+	m0_bcount_t         len = 1;
+	void               *key;
+	char               *val = NULL;
+	int                 flags = 0;
+	int                 i;
+
+	M0_PRE(M0_IN(opcode, (M0_IC_PUT, M0_IC_DEL)));
+	key = m0_alloc(sizeof(nr));
+	keys = M0_BUFVEC_INIT_BUF((void **) &key, &len);
+
+	if (opcode == M0_IC_PUT) {
+		val = m0_strdup("ItIsAValue");
+		vals = M0_BUFVEC_INIT_BUF((void **) &val, &len);
+	}
+
+	/* Execute the ops */
+	for (i = 0; i < nr; ++i) {
+		memcpy(key, &i, sizeof(i));
+
+		rc = m0_idx_op(idx, opcode, &keys,
+			       opcode == M0_IC_DEL ? NULL : &vals,
+			       rcs, flags, &op);
+		M0_UT_ASSERT(rc == 0);
+		m0_op_launch(&op, 1);
+
+		rc = m0_op_wait(op, M0_BITS(M0_OS_EXECUTED), WAIT_TIMEOUT);
+		M0_LOG(M0_DEBUG, "Got executed");
+		if (rc == -ESRCH) {
+			M0_UT_ASSERT(op->op_sm.sm_state == M0_OS_STABLE);
+		} else {
+			rc = m0_op_wait(op, M0_BITS(M0_OS_STABLE), WAIT_TIMEOUT);
+			M0_LOG(M0_DEBUG, "Got stable");
+			M0_UT_ASSERT(rc == 0);
+		}
+		M0_UT_ASSERT(rc == 0);
+		M0_UT_ASSERT(op->op_rc == 0);
+		M0_UT_ASSERT(rcs[0] == 0);
+		m0_op_fini(op);
+		m0_op_free(op);
+		op = NULL;
+	}
+
+	m0_free(key);
+	m0_free(val);
+}
+
+static void st_dtm0_one_s(void)
+{
+	duc_setup();
+	sequential_m0op(1, M0_IC_PUT);
+	duc_teardown();
+}
+
+static void st_dtm0_one_c(void)
+{
+	duc_setup();
+	concurrent_m0op(1, M0_IC_PUT);
+	duc_teardown();
+}
+
+static void st_dtm0_100put_s(void)
+{
+	duc_setup();
+	sequential_m0op(100, M0_IC_PUT);
+	duc_teardown();
+}
+
+static void st_dtm0_100put_c(void)
+{
+	duc_setup();
+	concurrent_m0op(100, M0_IC_PUT);
+	duc_teardown();
+}
+
+static void st_dtm0_putdel(void)
+{
+	duc_setup();
+	sequential_m0op(1, M0_IC_PUT);
+	sequential_m0op(1, M0_IC_DEL);
+	duc_teardown();
+}
+
+static void st_dtm0_100del_s(void)
+{
+	duc_setup();
+	sequential_m0op(100, M0_IC_PUT);
+	sequential_m0op(100, M0_IC_DEL);
+	duc_teardown();
+}
+
+static void st_dtm0_100del_c(void)
+{
+	duc_setup();
+	concurrent_m0op(100, M0_IC_PUT);
+	concurrent_m0op(100, M0_IC_DEL);
+	duc_teardown();
+}
+
 
 struct m0_ut_suite ut_suite_mt_idx_dix = {
 	.ts_name   = "idx-dix-mt",
@@ -880,10 +1046,16 @@ struct m0_ut_suite ut_suite_mt_idx_dix = {
 	.ts_init   = ut_suite_mt_idx_dix_init,
 	.ts_fini   = ut_suite_mt_idx_dix_fini,
 	.ts_tests  = {
-		{ "fom",  st_mt,           "Anatoliy" },
-		{ "lsf",  st_lsfid,        "Anatoliy" },
-		{ "lsfc", st_lsfid_cancel, "Vikram"   },
-		{ "dtm0", st_one_dtm0_op,  "Anatoliy" },
+		{ "fom",           st_mt,           "Anatoliy" },
+		{ "lsf",           st_lsfid,        "Anatoliy" },
+		{ "lsfc",          st_lsfid_cancel, "Vikram"   },
+		{ "dtm0_one_s",    st_dtm0_one_s,   "Anatoliy" },
+		{ "dtm0_one_c",    st_dtm0_one_c,   "Ivan"     },
+		{ "dtm0_100put_s", st_dtm0_100put_s, "Ivan"    },
+		{ "dtm0_100put_c", st_dtm0_100put_c, "Ivan"    },
+		{ "dtm0_putdel",   st_dtm0_putdel,   "Ivan"    },
+		{ "dtm0_100del_s", st_dtm0_100del_s, "Ivan"    },
+		{ "dtm0_100del_c", st_dtm0_100del_c, "Ivan"    },
 		{ NULL, NULL }
 	}
 };
