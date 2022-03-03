@@ -1,0 +1,1 @@
+https://github.com/yanqingfu/cortx-s3server/blob/main/st/clitests/awss3api_spec.py
