@@ -2,3 +2,6 @@
 	path = extra-libs/galois
 	url = ../cortx-motr-galois
 	ignore = untracked
+[submodule "cortx-s3server"]
+	path = cortx-s3server
+	url = https://github.com/yanqingfu/cortx-s3server

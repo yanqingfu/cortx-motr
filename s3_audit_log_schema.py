@@ -1,0 +1,1 @@
+cortx-s3server/st/clitests/s3_audit_log_schema.py
